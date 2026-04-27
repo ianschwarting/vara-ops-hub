@@ -558,8 +558,20 @@
           <div class="field"><label>Weekly rent</label><input id="f-rent" type="text" placeholder="e.g. $185/wk"></div>
           <div class="field"><label>Services offered</label><input id="f-services" type="text" placeholder="e.g. Hair cuts, coloring"></div>
         </div>
+        <div class="form-grid">
+          <div class="field"><label>Door code</label><input id="f-doorcode" type="text" placeholder="e.g. 1234"></div>
+          <div class="field"><label>Sink type</label>
+            <select id="f-sink">
+              <option value="">Select sink type...</option>
+              <option value="Hair">Hair</option>
+              <option value="Pedestal">Pedestal</option>
+              <option value="None">None</option>
+              <option value="Custom">Custom</option>
+            </select>
+          </div>
+        </div>
         <div class="form-grid full">
-          <div class="field"><label>Notes for this tenant</label><textarea id="f-notes" placeholder="Special requests, sink type, furniture needs, etc."></textarea></div>
+          <div class="field"><label>Notes for this tenant</label><textarea id="f-notes" placeholder="Special requests, furniture needs, etc."></textarea></div>
         </div>
         <button class="btn btn-primary btn-lg btn-full" id="gen-btn" onclick="generatePackage()">
           <span id="gen-btn-text">Generate onboarding package</span>
@@ -822,6 +834,8 @@ async function generatePackage() {
   const phone = document.getElementById('f-phone').value.trim();
   const rent = document.getElementById('f-rent').value.trim();
   const services = document.getElementById('f-services').value.trim();
+  const doorcode = document.getElementById('f-doorcode').value.trim();
+  const sink = document.getElementById('f-sink').value;
   const notes = document.getElementById('f-notes').value.trim();
 
   if (!name || !location || !suite) {
@@ -829,7 +843,7 @@ async function generatePackage() {
     return;
   }
 
-  currentTenant = { name, biz, location, suite, date, email, phone, rent, services, notes };
+  currentTenant = { name, biz, location, suite, date, email, phone, rent, services, doorcode, sink, notes };
 
   const btn = document.getElementById('gen-btn');
   btn.disabled = true;
@@ -1000,18 +1014,107 @@ function saveChecklist() {
   saveActivity(activity);
   activityLog = activity;
 
+  // Try to write to Google Sheet
+  const token = localStorage.getItem('vara_google_token');
+  const settings = getSettings();
+  const sheetId = settings.google_sheet_id;
+  if (token && sheetId) {
+    syncToSheet(token, sheetId).then(result => {
+      if (result.success) {
+        showSheetStatus('✓ Google Sheet updated successfully', 'success');
+      } else {
+        showSheetStatus('Sheet sync failed: ' + result.error, 'error');
+      }
+    });
+  }
+
   document.getElementById('checklist-card').style.display = 'none';
   document.getElementById('ai-output-area').style.display = 'none';
   document.getElementById('ai-result').innerHTML = '';
-  ['f-name','f-biz','f-suite','f-date','f-email','f-phone','f-rent','f-services','f-notes'].forEach(id => document.getElementById(id).value = '');
+  ['f-name','f-biz','f-suite','f-date','f-email','f-phone','f-rent','f-services','f-doorcode','f-notes'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('f-location').value = '';
+  document.getElementById('f-sink').value = '';
 
   renderDashboard();
   renderRecentActivity();
 
   const btn = document.getElementById('gen-btn');
-  btn.textContent = '✓ Logged successfully';
-  setTimeout(() => { btn.disabled = false; document.getElementById('gen-btn-text').textContent = currentMode === 'on' ? 'Generate onboarding package' : 'Generate offboarding package'; btn.innerHTML = '<span id="gen-btn-text">' + (currentMode === 'on' ? 'Generate onboarding package' : 'Generate offboarding package') + '</span>'; }, 2000);
+  btn.innerHTML = '<span id="gen-btn-text">✓ Logged successfully</span>';
+  setTimeout(() => { btn.disabled = false; btn.innerHTML = '<span id="gen-btn-text">' + (currentMode === 'on' ? 'Generate onboarding package' : 'Generate offboarding package') + '</span>'; }, 2000);
+}
+
+function showSheetStatus(msg, type) {
+  const existing = document.getElementById('sheet-status');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.id = 'sheet-status';
+  div.className = 'alert alert-' + (type === 'success' ? 'success' : 'error');
+  div.style.marginTop = '1rem';
+  div.textContent = msg;
+  document.getElementById('view-onboard').appendChild(div);
+  setTimeout(() => div.remove(), 5000);
+}
+
+async function syncToSheet(token, sheetId) {
+  try {
+    const t = currentTenant;
+    const isOn = currentMode === 'on';
+
+    // Step 1: Read column A and C to find the matching row
+    const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Master Tenant Tracker!A:C`;
+    const readRes = await fetch(readUrl, { headers: { Authorization: 'Bearer ' + token } });
+    if (!readRes.ok) return { success: false, error: 'Could not read sheet' };
+    const readData = await readRes.json();
+    const rows = readData.values || [];
+
+    // Find matching row (1-indexed for Sheets API, skip header row 0)
+    let rowIndex = -1;
+    for (let i = 1; i < rows.length; i++) {
+      const locMatch = (rows[i][0] || '').trim().toLowerCase() === t.location.trim().toLowerCase();
+      const suiteMatch = (rows[i][2] || '').trim().toLowerCase() === t.suite.trim().toLowerCase();
+      if (locMatch && suiteMatch) { rowIndex = i + 1; break; } // +1 because Sheets is 1-indexed
+    }
+
+    if (rowIndex === -1) return { success: false, error: `Could not find suite ${t.suite} at ${t.location} in the sheet` };
+
+    // Step 2: Build the update values
+    // Columns: A=Location, B=Person, C=Suite, E=Rent, K=Phone, L=Email, M=Business, N=Services, Q=DoorCode, R=Sink, W=MoveInDate
+    // We update specific cells rather than a whole row to avoid overwriting formulas
+    const updates = isOn ? [
+      { range: `Master Tenant Tracker!B${rowIndex}`, values: [[t.name]] },
+      { range: `Master Tenant Tracker!E${rowIndex}`, values: [[t.rent]] },
+      { range: `Master Tenant Tracker!K${rowIndex}`, values: [[t.phone]] },
+      { range: `Master Tenant Tracker!L${rowIndex}`, values: [[t.email]] },
+      { range: `Master Tenant Tracker!M${rowIndex}`, values: [[t.biz]] },
+      { range: `Master Tenant Tracker!N${rowIndex}`, values: [[t.services]] },
+      { range: `Master Tenant Tracker!Q${rowIndex}`, values: [[t.doorcode]] },
+      { range: `Master Tenant Tracker!R${rowIndex}`, values: [[t.sink]] },
+      { range: `Master Tenant Tracker!W${rowIndex}`, values: [[t.date]] },
+    ] : [
+      // Offboarding: clear tenant data
+      { range: `Master Tenant Tracker!B${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!E${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!K${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!L${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!M${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!N${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!Q${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!R${rowIndex}`, values: [['']] },
+      { range: `Master Tenant Tracker!W${rowIndex}`, values: [['']] },
+    ];
+
+    // Step 3: Batch update
+    const writeUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`;
+    const writeRes = await fetch(writeUrl, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: updates })
+    });
+    if (!writeRes.ok) return { success: false, error: 'Could not write to sheet' };
+    return { success: true };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
 }
 
 // ─── SETTINGS ────────────────────────────────────────────────────────────────
@@ -1069,7 +1172,7 @@ function renderSettings() {
 function googleSignIn() {
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: window.location.href.split('?')[0],
+    redirect_uri: window.location.origin,
     response_type: 'token',
     scope: GOOGLE_SCOPES,
     include_granted_scopes: 'true',
