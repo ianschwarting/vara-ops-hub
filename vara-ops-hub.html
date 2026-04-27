@@ -917,6 +917,8 @@ Notes: ${notes || 'none'}`;
     if (emailText) html += aiSection(isOn ? 'Welcome email (ready to send)' : 'Goodbye email (ready to send)', emailText);
     if (sms) html += aiSection('ClickSend SMS (ready to send)', sms);
     if (pmNotes) html += aiSection('PM notes', pmNotes);
+    if (!emailText && !sms && !pmNotes && text) html += aiSection('Generated content', text);
+    if (!text) html += `<div class="alert alert-warn" style="margin:1rem">No content returned. API response: ${JSON.stringify(data).substring(0,200)}</div>`;
     html += '</div></div>';
 
     document.getElementById('ai-result').innerHTML = html;
