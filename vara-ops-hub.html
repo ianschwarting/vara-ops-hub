@@ -628,6 +628,7 @@
         <div class="flex gap-2 items-center">
           <input type="text" id="new-location" placeholder="New location name" style="border:1px solid var(--border); border-radius:var(--radius); padding:9px 12px; font-size:13.5px; background:var(--bg); color:var(--text); flex:1;">
           <button class="btn btn-secondary" onclick="addLocation()">Add location</button>
+          <button class="btn btn-danger" onclick="resetLocations()">Reset to default</button>
         </div>
       </div>
     </div>
@@ -1235,6 +1236,14 @@ function addLocation() {
   locs.push(val);
   saveLocations(locs);
   document.getElementById('new-location').value = '';
+  renderLocationsList();
+  renderSidebar();
+  renderLocationSelect();
+}
+
+function resetLocations() {
+  if (!confirm('Reset locations to the default alphabetical list? This will remove any custom locations you added.')) return;
+  saveLocations([...DEFAULT_LOCATIONS]);
   renderLocationsList();
   renderSidebar();
   renderLocationSelect();
