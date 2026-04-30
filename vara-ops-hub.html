@@ -484,20 +484,95 @@
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 10px; }
+
+  /* LOGIN GATE */
+  #login-gate {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+  .login-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 3rem 3.5rem;
+    text-align: center;
+    max-width: 420px;
+  }
+  .login-logo {
+    font-family: 'Instrument Serif', serif;
+    font-size: 32px;
+    margin-bottom: 8px;
+  }
+  .login-logo em { font-style: italic; color: var(--accent); }
+  .login-sub { color: var(--text2); font-size: 14px; margin-bottom: 2rem; }
+  .login-error {
+    margin-top: 1rem;
+    padding: 10px 14px;
+    background: var(--warn-light);
+    color: var(--warn);
+    border: 1px solid #D4A090;
+    border-radius: var(--radius);
+    font-size: 13px;
+  }
+  .login-loading { color: var(--text3); font-size: 13px; }
+
+  /* USER PILL IN HEADER */
+  .user-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 10px 4px 4px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 20px;
+    font-size: 12px;
+    color: #C8C3B8;
+  }
+  .user-pill img { width: 24px; height: 24px; border-radius: 50%; }
+  .user-pill button {
+    background: transparent; border: none; color: var(--text3);
+    cursor: pointer; font-size: 11px; padding: 2px 6px;
+  }
+  .user-pill button:hover { color: #F5F3EE; }
 </style>
 </head>
 <body>
 
-<header class="header">
+<!-- LOGIN GATE - shown until user is authenticated -->
+<div id="login-gate">
+  <div class="login-card">
+    <div class="login-logo">VARA <em>Ops Hub</em></div>
+    <div class="login-sub">Sign in to continue</div>
+    <form id="login-form" onsubmit="return doLogin(event)" style="display: flex; flex-direction: column; gap: 12px; text-align: left;">
+      <div class="field">
+        <label>Your name</label>
+        <input id="login-name" type="text" placeholder="e.g. Sarah" required autocomplete="name">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="login-password" type="password" placeholder="Hub password" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg btn-full" id="login-submit" style="margin-top: 8px;">Sign in</button>
+    </form>
+    <div id="login-loading" class="login-loading" style="display:none; margin-top: 1rem;">Signing in...</div>
+    <div id="login-error" class="login-error" style="display:none"></div>
+  </div>
+</div>
+
+<header class="header" style="display:none" id="app-header">
   <div class="header-logo">VARA <span>Ops Hub</span></div>
   <nav class="header-nav">
     <button class="nav-btn active" onclick="showView('dashboard')">Dashboard</button>
     <button class="nav-btn" onclick="showView('onboard')">On/Offboard</button>
     <button class="nav-btn" onclick="showView('settings')">Settings</button>
+    <div class="user-pill" id="user-pill" style="margin-left: 12px;"></div>
   </nav>
 </header>
 
-<div class="app">
+<div class="app" id="app-main" style="display:none">
 
   <!-- SIDEBAR -->
   <aside class="sidebar">
@@ -664,8 +739,7 @@ const ONBOARD_STEPS = [
   { id:'deposit', label:'Deposit paid — photo in folder', tag:'Finance' },
   { id:'buildium', label:'Add to Buildium', tag:'Buildium' },
   { id:'sink', label:'Confirm sink type and setup', tag:'Suite' },
-  { id:'furniture', label:'Confirm furniture needs', tag:'Suite' },
-  { id:'sms-sent', label:'Send move-in day SMS via ClickSend', tag:'ClickSend' },
+  { id:'furniture', label:'Confirm furniture needs', tag:'Suite' }
 ];
 
 const OFFBOARD_STEPS = [
@@ -688,13 +762,23 @@ const OFFBOARD_STEPS = [
   { id:'final-billing', label:'Confirm final billing is settled', tag:'Finance' },
   { id:'return-deposit', label:'Return deposit', tag:'Finance' },
   { id:'cleaning', label:'Schedule cleaning / maintenance', tag:'Suite' },
-  { id:'suite-available', label:'Mark suite as available in master sheet', tag:'Sheet' },
+  { id:'suite-available', label:'Mark suite as available in master sheet', tag:'Sheet' }
 ];
 
 let currentMode = 'on';
 let checklistState = {};
 let activityLog = [];
 let currentTenant = null;
+let currentUser = null;
+
+// ─── ONE-TIME LOCALSTORAGE CLEANUP ───────────────────────────────────────────
+// Old versions stored API keys client-side. They're useless now (server holds the keys)
+// and shouldn't sit on disk. Wipe once.
+(function migrateOldStorage() {
+  if (localStorage.getItem('vara_migration_v2') === 'done') return;
+  localStorage.removeItem('vara_settings');
+  localStorage.setItem('vara_migration_v2', 'done');
+})();
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
 function getLocations() {
@@ -702,16 +786,99 @@ function getLocations() {
   return stored ? JSON.parse(stored) : [...DEFAULT_LOCATIONS];
 }
 function saveLocations(locs) { localStorage.setItem('vara_locations', JSON.stringify(locs)); }
-function getSettings() {
-  const stored = localStorage.getItem('vara_settings');
-  return stored ? JSON.parse(stored) : {};
-}
-function saveSettingsData(data) { localStorage.setItem('vara_settings', JSON.stringify(data)); }
 function getActivity() {
   const stored = localStorage.getItem('vara_activity');
   return stored ? JSON.parse(stored) : [];
 }
 function saveActivity(log) { localStorage.setItem('vara_activity', JSON.stringify(log)); }
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+async function bootstrap() {
+  // Check for existing session
+  try {
+    const r = await fetch('/api/auth/whoami');
+    if (r.ok) {
+      const data = await r.json();
+      if (data.authenticated) {
+        currentUser = data;
+        showApp();
+        return;
+      }
+    }
+  } catch (e) { /* fall through to login */ }
+
+  // No session — show login form. Restore last-used name if PM has logged in here before.
+  const savedName = localStorage.getItem('vara_pm_name');
+  if (savedName) {
+    document.getElementById('login-name').value = savedName;
+    // Auto-focus the password field if name is already filled
+    setTimeout(() => document.getElementById('login-password').focus(), 50);
+  } else {
+    setTimeout(() => document.getElementById('login-name').focus(), 50);
+  }
+}
+
+async function doLogin(event) {
+  event.preventDefault();
+  const name = document.getElementById('login-name').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!name || !password) return false;
+
+  document.getElementById('login-loading').style.display = '';
+  document.getElementById('login-error').style.display = 'none';
+  document.getElementById('login-submit').disabled = true;
+
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, password })
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      showLoginError(data.error || 'Sign-in failed.');
+      document.getElementById('login-submit').disabled = false;
+      return false;
+    }
+    // Remember name so they don't have to retype it next time
+    localStorage.setItem('vara_pm_name', name);
+    currentUser = { name: data.name };
+    showApp();
+  } catch (e) {
+    showLoginError('Network error: ' + e.message);
+    document.getElementById('login-submit').disabled = false;
+  }
+  return false;
+}
+
+function showLoginError(msg) {
+  document.getElementById('login-loading').style.display = 'none';
+  const el = document.getElementById('login-error');
+  el.textContent = msg;
+  el.style.display = '';
+}
+
+function showApp() {
+  document.getElementById('login-gate').style.display = 'none';
+  document.getElementById('app-header').style.display = '';
+  document.getElementById('app-main').style.display = '';
+  renderUserPill();
+  init();
+}
+
+function renderUserPill() {
+  if (!currentUser) return;
+  const pill = document.getElementById('user-pill');
+  const initial = (currentUser.name || 'P')[0].toUpperCase();
+  const avatar = `<div style="width:24px;height:24px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:500;">${initial}</div>`;
+  pill.innerHTML = `${avatar}<span>${currentUser.name}</span><button onclick="signOut()">Sign out</button>`;
+}
+
+async function signOut() {
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+  location.reload();
+}
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 function init() {
@@ -854,60 +1021,32 @@ async function generatePackage() {
   document.getElementById('ai-result').innerHTML = '';
   document.getElementById('checklist-card').style.display = 'none';
 
-  const settings = getSettings();
-  const apiKey = settings.anthropic_key;
-  if (!apiKey) {
-    document.getElementById('loading-indicator').style.display = 'none';
-    document.getElementById('ai-result').innerHTML = `
-      <div class="alert alert-warn">
-        No Anthropic API key found. Go to <strong>Settings</strong> and add your API key to enable AI-generated emails and notes.
-      </div>`;
-    renderChecklist();
-    btn.disabled = false;
-    return;
-  }
-
   const isOn = currentMode === 'on';
-  const system = `You are an operations assistant for VARA Salon Suites, a growing salon suites business with ${getLocations().length} locations. Generate professional, warm, and concise output. Return ONLY these XML tags with content inside, nothing else:
-<welcome_email>...</welcome_email>
-<sms>...</sms>
-<pm_notes>...</pm_notes>
-
-The email should be warm, professional, ready to send. Sign off as "The VARA ${location} Team".
-The SMS should be brief, friendly, under 160 chars. 
-PM notes should be 2-3 bullet points flagging anything unusual or requiring attention.`;
-
-  const prompt = isOn
-    ? `Generate an onboarding package for:
-Tenant: ${name}${biz ? ` (${biz})` : ''}
-Location: ${location} — Suite ${suite}
-Move-in date: ${date || 'TBD'}
-Email: ${email || 'not provided'} | Phone: ${phone || 'not provided'}
-Weekly rent: ${rent || 'TBD'}
-Services: ${services || 'not specified'}
-Notes: ${notes || 'none'}`
-    : `Generate an offboarding package for a departing tenant:
-Tenant: ${name}${biz ? ` (${biz})` : ''}
-Location: ${location} — Suite ${suite}
-Move-out date: ${date || 'TBD'}
-Email: ${email || 'not provided'} | Phone: ${phone || 'not provided'}
-Notes: ${notes || 'none'}`;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await fetch('/api/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 1000, system, messages: [{ role: 'user', content: prompt }] })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: currentMode,
+        tenant: currentTenant,
+        locationCount: getLocations().length
+      })
     });
-    const data = await res.json();
-    const text = data.content?.map(b => b.text || '').join('') || '';
-
-    const extract = tag => { const m = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)); return m ? m[1].trim() : null; };
-    const emailText = extract('welcome_email');
-    const sms = extract('sms');
-    const pmNotes = extract('pm_notes');
-
+    const data = await r.json();
     document.getElementById('loading-indicator').style.display = 'none';
+
+    if (!r.ok) {
+      if (r.status === 401) {
+        alert('Your session expired. Please sign in again.');
+        location.reload();
+        return;
+      }
+      document.getElementById('ai-result').innerHTML = `<div class="alert alert-error">Generation failed: ${data.error || 'Unknown error'}</div>`;
+      renderChecklist();
+      btn.disabled = false;
+      return;
+    }
 
     let html = `<div class="ai-output">
       <div class="ai-output-header">
@@ -915,42 +1054,185 @@ Notes: ${notes || 'none'}`;
       </div>
       <div class="ai-output-body">`;
 
-    if (emailText) html += aiSection(isOn ? 'Welcome email (ready to send)' : 'Goodbye email (ready to send)', emailText);
-    if (sms) html += aiSection('ClickSend SMS (ready to send)', sms);
-    if (pmNotes) html += aiSection('PM notes', pmNotes);
-    if (!emailText && !sms && !pmNotes && text) html += aiSection('Generated content', text);
-    if (!text) html += `<div class="alert alert-warn" style="margin:1rem">No content returned. API response: ${JSON.stringify(data).substring(0,200)}</div>`;
+    if (data.welcome_email) html += aiSection(
+      isOn ? 'Welcome email (review & send)' : 'Goodbye email (review & send)',
+      data.welcome_email,
+      { type: 'email', btnLabel: 'Send email', handler: 'sendEmail' }
+    );
+    html += aiSection(
+      isOn ? `ClickSend — add to "${location}" list` : `ClickSend — remove from "${location}" list`,
+      isOn
+        ? `Adds ${name} (${phone || 'no phone on file'}) to the "${location}" contact list, so they receive mass texts sent to that location.`
+        : `Removes ${name} (${phone || 'no phone on file'}) from the "${location}" contact list.`,
+      { type: 'clicksend', btnLabel: isOn ? 'Add to list' : 'Remove from list', handler: isOn ? 'doClickSendAdd' : 'doClickSendRemove' }
+    );
+    if (data.pm_notes) html += aiSection('PM notes', data.pm_notes);
+    if (isOn) html += aiSection(
+      'Buildium tenant setup',
+      'Click "Create in Buildium" to set up this tenant with auto-invite. The hub will look up your Buildium property and unit IDs by location and suite number.',
+      { type: 'buildium', btnLabel: 'Create in Buildium', handler: 'doBuildiumCreate' }
+    );
     html += '</div></div>';
 
     document.getElementById('ai-result').innerHTML = html;
     renderChecklist();
-    setupCopyBtns();
   } catch(e) {
     document.getElementById('loading-indicator').style.display = 'none';
-    document.getElementById('ai-result').innerHTML = `<div class="alert alert-error">Error connecting to API. Check your API key in Settings.</div>`;
+    document.getElementById('ai-result').innerHTML = `<div class="alert alert-error">Network error: ${e.message}</div>`;
     renderChecklist();
   }
   btn.disabled = false;
 }
 
-function aiSection(label, content) {
+function aiSection(label, content, action) {
   const id = 'ai-' + Math.random().toString(36).slice(2);
-  return `<div class="ai-section">
+  let actionBtn = '';
+  if (action) {
+    actionBtn = `<button class="btn btn-primary" style="padding:5px 14px; font-size:12px;" onclick="${action.handler}('${id}', this)" id="action-${id}">${action.btnLabel}</button>`;
+  }
+  return `<div class="ai-section" data-action-type="${action ? action.type : ''}">
     <div class="ai-section-label">
       <span>${label}</span>
-      <button class="copy-btn" onclick="copyText('${id}')">Copy</button>
+      <div style="display:flex; gap:6px;">
+        <button class="copy-btn" onclick="copyText('${id}')">Copy</button>
+        ${actionBtn}
+      </div>
     </div>
-    <div class="ai-text" id="${id}">${content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+    <div class="ai-text" id="${id}" contenteditable="true" style="cursor:text;">${content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
   </div>`;
 }
 
-function setupCopyBtns() {}
 function copyText(id) {
   const el = document.getElementById(id);
   if (!el) return;
   navigator.clipboard.writeText(el.textContent);
   event.target.textContent = 'Copied!';
   setTimeout(() => event.target.textContent = 'Copy', 1500);
+}
+
+// ─── SEND HANDLERS ───────────────────────────────────────────────────────────
+function setBtnState(btn, label, disabled) {
+  btn.textContent = label;
+  btn.disabled = disabled;
+}
+function btnSuccess(btn, label) {
+  btn.textContent = label;
+  btn.style.background = 'var(--accent-text)';
+  btn.disabled = true;
+}
+function btnError(btn, originalLabel, errMsg) {
+  alert(errMsg);
+  btn.textContent = originalLabel;
+  btn.disabled = false;
+}
+
+async function callApi(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await r.json();
+  if (r.status === 401) {
+    alert('Session expired. Please sign in again.');
+    location.reload();
+    throw new Error('Session expired');
+  }
+  if (!r.ok) {
+    throw new Error(data.error || `Server returned ${r.status}`);
+  }
+  return data;
+}
+
+async function sendEmail(textId, btn) {
+  if (!currentTenant) return;
+  const emailEl = document.getElementById(textId);
+  const body = emailEl.textContent;
+  const to = currentTenant.email;
+  if (!to) { alert('No tenant email on file. Add an email first.'); return; }
+  if (!confirm(`Send this email to ${to}?\n\nFirst 100 chars:\n${body.substring(0,100)}...`)) return;
+
+  const subject = currentMode === 'on'
+    ? `Welcome to VARA ${currentTenant.location} — Suite ${currentTenant.suite}`
+    : `Move-out info — VARA ${currentTenant.location} Suite ${currentTenant.suite}`;
+
+  setBtnState(btn, 'Sending...', true);
+  try {
+    await callApi('/api/send-email', {
+      to: `${currentTenant.name} <${to}>`,
+      subject,
+      body,
+      fromName: `VARA ${currentTenant.location}`
+    });
+    btnSuccess(btn, '✓ Sent');
+    autoCheckStep(currentMode === 'on' ? 'welcome-email' : 'checkout-email');
+    autoCheckStep(currentMode === 'on' ? 'made-contact' : 'final-contact');
+  } catch(e) {
+    btnError(btn, 'Send email', 'Email send failed: ' + e.message);
+  }
+}
+
+async function doClickSendAdd(textId, btn) {
+  if (!currentTenant) return;
+  if (!currentTenant.phone) { alert('No tenant phone on file. Add a phone number first.'); return; }
+  setBtnState(btn, 'Adding...', true);
+  try {
+    const [first, ...rest] = currentTenant.name.split(' ');
+    const last = rest.join(' ') || '';
+    await callApi('/api/clicksend', {
+      action: 'add',
+      listName: currentTenant.location,
+      contact: {
+        first, last,
+        phone: currentTenant.phone,
+        email: currentTenant.email || '',
+        suite: currentTenant.suite,
+        biz: currentTenant.biz || ''
+      }
+    });
+    btnSuccess(btn, '✓ Added');
+    autoCheckStep('clicksend');
+  } catch(e) {
+    btnError(btn, 'Add to list', 'Could not add to ClickSend: ' + e.message);
+  }
+}
+
+async function doClickSendRemove(textId, btn) {
+  if (!currentTenant) return;
+  if (!currentTenant.phone) { alert('No tenant phone on file. Cannot find them in ClickSend without a phone number.'); return; }
+  setBtnState(btn, 'Removing...', true);
+  try {
+    await callApi('/api/clicksend', {
+      action: 'remove',
+      listName: currentTenant.location,
+      phone: currentTenant.phone
+    });
+    btnSuccess(btn, '✓ Removed');
+    autoCheckStep('remove-clicksend');
+  } catch(e) {
+    btnError(btn, 'Remove from list', 'Could not remove from ClickSend: ' + e.message);
+  }
+}
+
+async function doBuildiumCreate(textId, btn) {
+  if (!currentTenant) return;
+  if (!currentTenant.email) { alert('Tenant email is required to create a Buildium account with auto-invite.'); return; }
+  if (!confirm(`Create Buildium tenant for ${currentTenant.name} at ${currentTenant.location} Suite ${currentTenant.suite}?\n\nThis will send them an account invite email automatically.`)) return;
+
+  setBtnState(btn, 'Creating...', true);
+  try {
+    await callApi('/api/buildium', { action: 'create', tenant: currentTenant });
+    btnSuccess(btn, '✓ Created');
+    autoCheckStep('buildium');
+  } catch(e) {
+    btnError(btn, 'Create in Buildium', 'Buildium setup failed: ' + e.message);
+  }
+}
+
+function autoCheckStep(stepId) {
+  if (checklistState.hasOwnProperty(stepId) && !checklistState[stepId]) {
+    toggleCheck(stepId);
+  }
 }
 
 // ─── CHECKLIST ───────────────────────────────────────────────────────────────
@@ -1003,7 +1285,7 @@ function resetChecklist() {
   updateProgress(steps);
 }
 
-function saveChecklist() {
+async function saveChecklist() {
   if (!currentTenant) return;
   const activity = getActivity();
   activity.push({
@@ -1018,20 +1300,12 @@ function saveChecklist() {
   saveActivity(activity);
   activityLog = activity;
 
-  // Try to write to Google Sheet
-  const settings = getSettings();
-  const sheetId = settings.google_sheet_id;
-  if (sheetId) {
-    getServiceAccountToken().then(token => {
-      if (!token) { showSheetStatus('Could not get Google auth token', 'error'); return; }
-      syncToSheet(token, sheetId).then(result => {
-        if (result.success) {
-          showSheetStatus('✓ Google Sheet updated successfully', 'success');
-        } else {
-          showSheetStatus('Sheet sync failed: ' + result.error, 'error');
-        }
-      });
-    }).catch(e => showSheetStatus('Google auth error: ' + e.message, 'error'));
+  // Sync to Master Tenant Tracker
+  try {
+    await callApi('/api/sheet-sync', { mode: currentMode, tenant: currentTenant });
+    showSheetStatus('✓ Master Tenant Tracker updated', 'success');
+  } catch (e) {
+    showSheetStatus('Sheet sync failed: ' + e.message, 'error');
   }
 
   document.getElementById('checklist-card').style.display = 'none';
@@ -1061,163 +1335,33 @@ function showSheetStatus(msg, type) {
   setTimeout(() => div.remove(), 5000);
 }
 
-async function syncToSheet(token, sheetId) {
-  try {
-    const t = currentTenant;
-    const isOn = currentMode === 'on';
-
-    // Step 1: Read column A and C to find the matching row
-    const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Master Tenant Tracker!A:C`;
-    const readRes = await fetch(readUrl, { headers: { Authorization: 'Bearer ' + token } });
-    if (!readRes.ok) return { success: false, error: 'Could not read sheet' };
-    const readData = await readRes.json();
-    const rows = readData.values || [];
-
-    // Find matching row (1-indexed for Sheets API, skip header row 0)
-    let rowIndex = -1;
-    for (let i = 1; i < rows.length; i++) {
-      const locMatch = (rows[i][0] || '').trim().toLowerCase() === t.location.trim().toLowerCase();
-      const suiteMatch = (rows[i][2] || '').trim().toLowerCase() === t.suite.trim().toLowerCase();
-      if (locMatch && suiteMatch) { rowIndex = i + 1; break; } // +1 because Sheets is 1-indexed
-    }
-
-    if (rowIndex === -1) return { success: false, error: `Could not find suite ${t.suite} at ${t.location} in the sheet` };
-
-    // Step 2: Build the update values
-    // Columns: A=Location, B=Person, C=Suite, E=Rent, K=Phone, L=Email, M=Business, N=Services, Q=DoorCode, R=Sink, W=MoveInDate
-    // We update specific cells rather than a whole row to avoid overwriting formulas
-    const updates = isOn ? [
-      { range: `Master Tenant Tracker!B${rowIndex}`, values: [[t.name]] },
-      { range: `Master Tenant Tracker!E${rowIndex}`, values: [[t.rent]] },
-      { range: `Master Tenant Tracker!K${rowIndex}`, values: [[t.phone]] },
-      { range: `Master Tenant Tracker!L${rowIndex}`, values: [[t.email]] },
-      { range: `Master Tenant Tracker!M${rowIndex}`, values: [[t.biz]] },
-      { range: `Master Tenant Tracker!N${rowIndex}`, values: [[t.services]] },
-      { range: `Master Tenant Tracker!Q${rowIndex}`, values: [[t.doorcode]] },
-      { range: `Master Tenant Tracker!R${rowIndex}`, values: [[t.sink]] },
-      { range: `Master Tenant Tracker!W${rowIndex}`, values: [[t.date]] },
-    ] : [
-      // Offboarding: clear tenant data
-      { range: `Master Tenant Tracker!B${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!E${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!K${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!L${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!M${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!N${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!Q${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!R${rowIndex}`, values: [['']] },
-      { range: `Master Tenant Tracker!W${rowIndex}`, values: [['']] },
-    ];
-
-    // Step 3: Batch update
-    const writeUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`;
-    const writeRes = await fetch(writeUrl, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: updates })
-    });
-    if (!writeRes.ok) return { success: false, error: 'Could not write to sheet' };
-    return { success: true };
-  } catch(e) {
-    return { success: false, error: e.message };
-  }
-}
-
 // ─── SETTINGS ────────────────────────────────────────────────────────────────
-
-// Service account credentials (hardcoded — this account only has access to your sheet)
-const SA_EMAIL = 'vara-ops-service@vara-ops.iam.gserviceaccount.com';
-const SA_KEY = `-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCz5PkuCayzu6dA\nl+bzLpjqJDg5tbtkDPhvXnkN8hcuTltPM4NGyROSqVEdmBjZ6IS998cyEZMicNtX\nZpFkvjzqpEoksgY7h+SV8SpoNi2szwLDbAtK5bS+00eofMSexZ0urO0glXBll7ui\nNugOIgdyu+HQ2NXMJZnc3uUBfdwuV3i8K+h+NpGJMawAyyK/o7vWxwt3BSPGwlv8\nSGW3S3Jfz3FLvks6mA8DU75bo1TKh+P62IZpoAsbDby9gsUUE7IVMNnWw0944Cvd\n5VJHFuCG9FND8DM1ArXCUFP/sjCGIRCE95IGhaJzsdSHcMRcTdprOcilA3K5P49j\nzb5MSJ4TAgMBAAECggEAVgjI/zKTTPYPHD5Jrr33VetylG8MquHlIuYswPWqDnRd\nCPja7MyXtsmRSLUIFZc1fOD2fESZeJw+2oLsQCEXYySlbP1TK79nHCrVnDdlCsOK\nT8npcK2BDs5e8/6Pzls2PC9pzO6LbZrumrrlqnSt2Tpv2gEJ5vOIrXBQV7FIz0Qq\n7gSVUHkwiGXWnjXOQDGKOXnXDlbuZDH5FudNBJ1HOJkZGFeeENkUpT13U9nOKBkV\nFJzZ2hNIe/A4Un9Y0teDoUoWILdd1qEsyqImWnqKiMWuJDXA4x7fShyMn5CbRxkc\n++0PALM+icTQLBA8fnDpnih4azli+TQN306l5kSSAQKBgQDXfMiTF3EgizXExgT9\npvU0tz8Xt5DFWw2OW6lRt6B1otLNE8R5syuPG6L+G5W8MkWfcOn46EA/Uo9N2FK2\nIRLk8o84gFHUtrx7vJPbmilEw5pNgzPZSuldcJepluUk+4VSHo+M86FDXrMb9Oxr\nGd0x36DOsZAdeZrJfqyKOihPAQKBgQDVtyFgc64lpgXolcRNrGuyQ8lz46uTkzXd\n5gLMUdlMpuYZ5Sp8hiYCJxIhNud6NjQpIWkSkNvqd6cIXEA6UXGC+Wc2I2hRqq6C\nxsm5jCTWmcB4dfpLUd8bIppuV94RXg7/VTaGMM7t5N46+o3A2Ef/xpNko88WVhJo\nSDtz4rvBEwKBgDqW4AY2WnjpwN3WpWa+LW9+33W4YHF4l0/8liX00nkJo11FIaeh\nUpefgQqsP2MjHBEE52jY5RcSgIo+5gZFKdj8JnrLUPSQFuFh3aXY3Z2nvV2T7dYH\n6zmPsnzW3UjX5mD0lD1TxKYHqpVQW7OnHaBA2H06hB+vf6mHeqw+sdUBAoGBANGM\nPVK4OmG51wNFjfPnArYI10clTb9mUSPg+o9iFaGd5/IuDCmK00u7CYC9t9vRt/U4\nSDEnDipo5cNByMwlvRoB9xxTPV8N7wxVY8flzN0KZnj2nNMrVInjtO5Kg3gd9LCQ\n2eRbiRojFW9Y6pLSvk3hY/YC0/N/s47CfGDVSOk3AoGBAIdNz4rIVQylSv1wbkdP\nY+JxVH1qAc1/QcMOOdjEfwc8DUq7xOVipw/WYQSGWQJbH+ouKX2Yc+FkTWjL6ZNN\n10t2A5kkXjxrGnR6ihW5MwYMokt/UCV2m5nFyIX/TO62Ur3N1cMmC1KA0W+Z+nUC\npxgS8aaJL5cgiIhIXfk6cko5\n-----END PRIVATE KEY-----\n`;
-
-let _saToken = null;
-let _saTokenExp = 0;
-
-async function getServiceAccountToken() {
-  const now = Math.floor(Date.now() / 1000);
-  if (_saToken && now < _saTokenExp - 60) return _saToken;
-
-  // Build JWT
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const claim = {
-    iss: SA_EMAIL,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now
-  };
-
-  const b64 = obj => btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
-  const header64 = b64(header);
-  const claim64 = b64(claim);
-  const unsigned = `${header64}.${claim64}`;
-
-  // Import private key and sign
-  const pemBody = SA_KEY.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\n/g, '');
-  const binaryDer = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
-  const cryptoKey = await crypto.subtle.importKey(
-    'pkcs8', binaryDer.buffer,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false, ['sign']
-  );
-  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', cryptoKey, new TextEncoder().encode(unsigned));
-  const sig64 = btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
-  const jwt = `${unsigned}.${sig64}`;
-
-  // Exchange JWT for access token
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`
-  });
-  const data = await res.json();
-  _saToken = data.access_token;
-  _saTokenExp = now + (data.expires_in || 3600);
-  return _saToken;
-}
-
-const API_KEYS = [
-  { id: 'anthropic_key', label: 'Anthropic API key', desc: 'Powers AI-generated emails, SMS, and notes', placeholder: 'sk-ant-...' },
-  { id: 'buildium_client_id', label: 'Buildium client ID', desc: 'Found in Buildium → Settings → API → Client ID', placeholder: 'Your Buildium client ID' },
-  { id: 'buildium_secret', label: 'Buildium client secret', desc: 'Found in Buildium → Settings → API → Client Secret', placeholder: 'Your Buildium client secret' },
-  { id: 'clicksend_user', label: 'ClickSend username', desc: 'The email address you use to log into ClickSend', placeholder: 'you@example.com' },
-  { id: 'clicksend_key', label: 'ClickSend API key', desc: 'Found in ClickSend → Developers → API Credentials', placeholder: 'Your ClickSend API key' },
-  { id: 'google_sheet_id', label: 'Google Sheet ID', desc: 'From your sheet URL: docs.google.com/spreadsheets/d/[ID HERE]/edit', placeholder: 'e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms' },
-];
-
 function renderSettings() {
-  const saved = getSettings();
-  document.getElementById('api-key-fields').innerHTML = API_KEYS.map(k => `
-    <div class="config-row">
-      <div>
-        <div class="config-name">${k.label}</div>
-        <div class="config-desc">${k.desc}</div>
+  // Settings page now only manages locations + shows connection status.
+  // All API keys live server-side in Vercel env vars.
+  document.getElementById('api-key-fields').innerHTML = `
+    <p class="text-sm text-muted">
+      All API credentials (Anthropic, Gmail, ClickSend, Buildium, Google Sheets) are managed server-side
+      and shared across all property managers. To rotate a key, an admin updates the Vercel environment
+      variable and redeploys — no PM action needed.
+    </p>
+    <div style="margin-top: 1.5rem;">
+      <div class="config-row">
+        <div>
+          <div class="config-name">Signed in as</div>
+          <div class="config-desc">${currentUser?.name || 'Unknown'}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="signOut()">Sign out</button>
       </div>
-      <div style="width: 300px;">
-        <input type="password" id="setting-${k.id}" placeholder="${k.placeholder}"
-          value="${saved[k.id] || ''}"
-          style="border:1px solid var(--border); border-radius:var(--radius); padding:8px 12px; font-size:13px; background:var(--bg); color:var(--text); width:100%; font-family:'DM Mono',monospace;">
-      </div>
-    </div>`).join('') + `
-    <div class="config-row">
-      <div>
-        <div class="config-name">Google Sheets</div>
-        <div class="config-desc">Connected via service account — no sign-in required</div>
-      </div>
-      <div style="width:300px;">
-        <span class="badge badge-green"><span class="badge-dot"></span>Auto-connected</span>
-      </div>
-    </div>`;
+    </div>
+  `;
+  // Hide the "Save settings" button and the saved indicator since there's nothing to save here
+  const saveBtn = document.querySelector('#view-settings .btn-primary');
+  if (saveBtn) saveBtn.style.display = 'none';
   renderLocationsList();
 }
 
-function saveSettings() {
-  const data = {};
-  API_KEYS.forEach(k => { data[k.id] = document.getElementById('setting-' + k.id).value.trim(); });
-  saveSettingsData(data);
-  const saved = document.getElementById('settings-saved');
-  saved.style.display = 'flex';
-  setTimeout(() => saved.style.display = 'none', 2500);
-}
+function saveSettings() { /* no-op: nothing to save in the new settings page */ }
 
 function renderLocationsList() {
   const locs = getLocations();
@@ -1260,7 +1404,7 @@ function removeLocation(idx) {
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
-init();
+bootstrap();
 </script>
 </body>
 </html>
