@@ -566,7 +566,8 @@
   <div class="header-logo">VARA <span>Ops Hub</span></div>
   <nav class="header-nav">
     <button class="nav-btn active" onclick="showView('dashboard')">Dashboard</button>
-    <button class="nav-btn" onclick="showView('onboard')">On/Offboard</button>
+    <button class="nav-btn" onclick="showView('pipeline')">Pipeline</button>
+    <button class="nav-btn" onclick="showView('onboard')">Quick draft</button>
     <button class="nav-btn" onclick="showView('settings')">Settings</button>
     <div class="user-pill" id="user-pill" style="margin-left: 12px;"></div>
   </nav>
@@ -595,6 +596,64 @@
       <div class="card">
         <div class="card-title">Recent activity</div>
         <div id="recent-activity"><div class="empty"><div class="empty-text">No activity yet — start by onboarding a tenant.</div></div></div>
+      </div>
+    </div>
+
+    <!-- PIPELINE VIEW -->
+    <div id="view-pipeline" class="view">
+      <div class="page-header">
+        <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+          <div>
+            <h1 class="page-title">Tenant <em>pipeline</em></h1>
+            <p class="page-subtitle">All tenants currently being onboarded</p>
+          </div>
+          <button class="btn btn-primary" onclick="openNewTenantModal()">+ New tenant</button>
+        </div>
+      </div>
+      <div id="pipeline-list">
+        <div class="empty"><div class="empty-text">Loading tenants...</div></div>
+      </div>
+    </div>
+
+    <!-- New tenant modal (hidden by default) -->
+    <div id="new-tenant-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:200; align-items:flex-start; justify-content:center; padding:3rem 1rem; overflow-y:auto;">
+      <div style="background:var(--surface); border-radius:var(--radius-lg); max-width:560px; width:100%; padding:1.75rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem;">
+          <h2 style="font-family:'Instrument Serif',serif; font-size:24px; font-weight:400;">New tenant</h2>
+          <button onclick="closeNewTenantModal()" style="background:none; border:none; font-size:22px; cursor:pointer; color:var(--text2);">×</button>
+        </div>
+        <p class="text-sm text-muted mb-3">
+          Just the basics — the tenant fills in the rest via the move-in form after they sign the lease.
+        </p>
+        <div class="form-grid">
+          <div class="field"><label>Tenant name *</label><input id="nt-name" type="text" placeholder="Full name"></div>
+          <div class="field"><label>Email *</label><input id="nt-email" type="email" placeholder="tenant@email.com"></div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>Phone</label><input id="nt-phone" type="tel" placeholder="(801) 555-0100"></div>
+          <div class="field"><label>Lease start date</label><input id="nt-leaseStartDate" type="text" placeholder="e.g. May 1, 2026"></div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>Location *</label>
+            <select id="nt-location"><option value="">Select location...</option></select>
+          </div>
+          <div class="field"><label>Suite # *</label><input id="nt-suite" type="text" placeholder="e.g. 101"></div>
+        </div>
+        <div class="form-grid full">
+          <div class="field"><label>Weekly rent</label><input id="nt-weeklyRent" type="text" placeholder="e.g. $185/wk"></div>
+        </div>
+        <div id="nt-error" class="alert alert-error" style="display:none; margin-top: 1rem;"></div>
+        <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:1.5rem;">
+          <button class="btn btn-secondary" onclick="closeNewTenantModal()">Cancel</button>
+          <button class="btn btn-primary" id="nt-submit" onclick="submitNewTenant()">Create tenant</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tenant detail modal -->
+    <div id="tenant-detail-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:200; align-items:flex-start; justify-content:center; padding:3rem 1rem; overflow-y:auto;">
+      <div style="background:var(--surface); border-radius:var(--radius-lg); max-width:680px; width:100%; padding:1.75rem;">
+        <div id="td-content"></div>
       </div>
     </div>
 
@@ -914,8 +973,9 @@ function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  const map = { dashboard: 0, onboard: 1, settings: 2 };
+  const map = { dashboard: 0, pipeline: 1, onboard: 2, settings: 3 };
   document.querySelectorAll('.nav-btn')[map[name]].classList.add('active');
+  if (name === 'pipeline') loadPipeline();
 }
 
 // ─── MODE ────────────────────────────────────────────────────────────────────
@@ -1401,6 +1461,281 @@ function removeLocation(idx) {
   renderLocationsList();
   renderSidebar();
   renderLocationSelect();
+}
+
+// ─── PIPELINE VIEW ───────────────────────────────────────────────────────────
+
+const STAGE_LABELS = {
+  draft: 'Draft',
+  lease_sent: 'Lease sent',
+  lease_signed: 'Lease signed',
+  form_pending: 'Form pending',
+  form_submitted: 'Form submitted',
+  processed: 'Processed',
+  archived: 'Archived'
+};
+
+const STAGE_COLORS = {
+  draft: 'badge-amber',
+  lease_sent: 'badge-amber',
+  lease_signed: 'badge-green',
+  form_pending: 'badge-amber',
+  form_submitted: 'badge-green',
+  processed: 'badge-green',
+  archived: 'badge-red'
+};
+
+let pipelineCache = null;
+
+async function loadPipeline() {
+  const el = document.getElementById('pipeline-list');
+  el.innerHTML = '<div class="empty"><div class="empty-text">Loading...</div></div>';
+  try {
+    const r = await fetch('/api/tenants');
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      el.innerHTML = `<div class="alert alert-error">Could not load pipeline: ${data.error || r.status}</div>`;
+      return;
+    }
+    const data = await r.json();
+    pipelineCache = data.tenants || [];
+    renderPipeline();
+  } catch (e) {
+    el.innerHTML = `<div class="alert alert-error">Network error: ${e.message}</div>`;
+  }
+}
+
+function renderPipeline() {
+  const el = document.getElementById('pipeline-list');
+  if (!pipelineCache || !pipelineCache.length) {
+    el.innerHTML = `<div class="card"><div class="empty">
+      <div class="empty-text">No tenants in the pipeline yet.</div>
+      <button class="btn btn-primary" style="margin-top: 1rem;" onclick="openNewTenantModal()">+ Create your first tenant</button>
+    </div></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="card"><div class="table-wrap"><table>
+    <thead><tr><th>Tenant</th><th>Location</th><th>Suite</th><th>Stage</th><th>Updated</th><th></th></tr></thead>
+    <tbody>${pipelineCache.map(t => `
+      <tr>
+        <td><strong>${escapeHtml(t.name)}</strong><div class="text-sm text-muted">${escapeHtml(t.email)}</div></td>
+        <td>${escapeHtml(t.location)}</td>
+        <td class="mono">${escapeHtml(t.suite)}</td>
+        <td><span class="badge ${STAGE_COLORS[t.stage] || 'badge-amber'}"><span class="badge-dot"></span>${STAGE_LABELS[t.stage] || t.stage}</span></td>
+        <td class="text-muted text-sm">${formatRelative(t.updatedAt)}</td>
+        <td><button class="btn btn-secondary" style="padding:5px 12px; font-size:12px;" onclick="openTenantDetail('${t.id}')">Open</button></td>
+      </tr>`).join('')}
+    </tbody></table></div></div>`;
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function formatRelative(iso) {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.round(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.round(h / 24);
+  return d + 'd ago';
+}
+
+// ─── New tenant modal ────────────────────────────────────────────────────────
+
+function openNewTenantModal() {
+  // Populate location dropdown from existing locations
+  const sel = document.getElementById('nt-location');
+  const locs = getLocations();
+  sel.innerHTML = '<option value="">Select location...</option>' +
+    locs.map(l => `<option value="${l}">${l}</option>`).join('');
+  ['nt-name','nt-email','nt-phone','nt-suite','nt-leaseStartDate','nt-weeklyRent'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('nt-error').style.display = 'none';
+  document.getElementById('new-tenant-modal').style.display = 'flex';
+}
+
+function closeNewTenantModal() {
+  document.getElementById('new-tenant-modal').style.display = 'none';
+}
+
+async function submitNewTenant() {
+  const get = id => document.getElementById(id).value.trim();
+  const payload = {
+    name: get('nt-name'),
+    email: get('nt-email'),
+    phone: get('nt-phone'),
+    location: get('nt-location'),
+    suite: get('nt-suite'),
+    leaseStartDate: get('nt-leaseStartDate'),
+    weeklyRent: get('nt-weeklyRent')
+  };
+  const errEl = document.getElementById('nt-error');
+  errEl.style.display = 'none';
+  if (!payload.name || !payload.email || !payload.location || !payload.suite) {
+    errEl.textContent = 'Name, email, location, and suite are required.';
+    errEl.style.display = '';
+    return;
+  }
+  const btn = document.getElementById('nt-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  try {
+    const r = await fetch('/api/tenants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      errEl.textContent = data.error || 'Could not create tenant.';
+      errEl.style.display = '';
+      btn.disabled = false;
+      btn.textContent = 'Create tenant';
+      return;
+    }
+    closeNewTenantModal();
+    btn.disabled = false;
+    btn.textContent = 'Create tenant';
+    await loadPipeline();
+    openTenantDetail(data.tenant.id);
+  } catch (e) {
+    errEl.textContent = 'Network error: ' + e.message;
+    errEl.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Create tenant';
+  }
+}
+
+// ─── Tenant detail modal ─────────────────────────────────────────────────────
+
+let currentDetailTenant = null;
+
+function openTenantDetail(id) {
+  currentDetailTenant = pipelineCache.find(t => t.id === id);
+  if (!currentDetailTenant) return;
+  renderTenantDetail();
+  document.getElementById('tenant-detail-modal').style.display = 'flex';
+}
+
+function closeTenantDetail() {
+  document.getElementById('tenant-detail-modal').style.display = 'none';
+  currentDetailTenant = null;
+}
+
+function renderTenantDetail() {
+  const t = currentDetailTenant;
+  const intakeUrl = `${window.location.origin}/intake/${t.intakeToken}`;
+
+  let actionsHtml = '';
+  if (t.stage === 'draft') {
+    actionsHtml = `<button class="btn btn-primary" id="td-send-lease" onclick="sendLease()">Send lease for signature</button>`;
+  } else if (t.stage === 'lease_sent') {
+    actionsHtml = `
+      <div class="alert alert-warn">Lease sent on ${formatRelative(t.pandadocSentAt)}. Waiting for tenant to sign.</div>
+      <button class="btn btn-secondary" id="td-send-lease" onclick="sendLease()">Re-send lease</button>`;
+  } else if (t.stage === 'lease_signed') {
+    actionsHtml = `
+      <div class="alert alert-success">✓ Lease signed on ${formatRelative(t.pandadocSignedAt)} and saved to Drive.</div>
+      <button class="btn btn-primary" id="td-send-welcome" onclick="sendWelcome()">Send welcome email + intake link</button>`;
+  } else if (t.stage === 'form_pending') {
+    actionsHtml = `
+      <div class="alert alert-warn">Welcome email sent ${formatRelative(t.welcomeEmailSentAt)}. Waiting for tenant to fill out the move-in form.</div>
+      <div style="margin-top: 0.5rem;">
+        <div class="text-sm text-muted mb-1">Intake link:</div>
+        <div class="mono text-sm" style="background:var(--bg); padding:8px 12px; border-radius:var(--radius); border:1px solid var(--border); word-break:break-all;">${escapeHtml(intakeUrl)}</div>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('${intakeUrl}'); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy link',1500);" style="margin-top:6px;">Copy link</button>
+      </div>
+      <hr class="divider">
+      <button class="btn btn-secondary" onclick="sendWelcome()">Re-send welcome email</button>`;
+  } else if (t.stage === 'form_submitted') {
+    actionsHtml = `
+      <div class="alert alert-success">✓ Tenant submitted the move-in form. Ready for review &amp; processing in Phase 2.</div>
+      <details style="margin-top: 1rem;">
+        <summary style="cursor:pointer; font-weight:500;">View form responses</summary>
+        <div style="margin-top: 0.75rem; padding: 1rem; background: var(--bg); border-radius: var(--radius);">
+          <div class="text-sm" style="display:grid; grid-template-columns:auto 1fr; gap:8px 16px;">
+            <div class="text-muted">Business name:</div><div>${escapeHtml(t.intakeResponse?.businessName || '—')}</div>
+            <div class="text-muted">Services:</div><div>${escapeHtml(t.intakeResponse?.services || '—')}</div>
+            <div class="text-muted">Sink type:</div><div>${escapeHtml(t.intakeResponse?.sinkType || '—')}</div>
+            <div class="text-muted">Door code:</div><div class="mono">${escapeHtml(t.intakeResponse?.doorCode || '—')}</div>
+            <div class="text-muted">Instagram:</div><div>${escapeHtml(t.intakeResponse?.instagram || '—')}</div>
+            <div class="text-muted">Heard about us:</div><div>${escapeHtml(t.intakeResponse?.heardAbout || '—')}</div>
+            <div class="text-muted">Files:</div><div>${(t.intakeFiles || []).map(f => escapeHtml(f.kind) + ' (' + escapeHtml(f.filename) + ')').join('<br>') || '—'}</div>
+          </div>
+        </div>
+      </details>`;
+  } else {
+    actionsHtml = `<div class="alert alert-warn">Stage: ${escapeHtml(STAGE_LABELS[t.stage] || t.stage)}</div>`;
+  }
+
+  document.getElementById('td-content').innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem;">
+      <div>
+        <h2 style="font-family:'Instrument Serif',serif; font-size:26px; font-weight:400;">${escapeHtml(t.name)}</h2>
+        <div class="text-muted text-sm">${escapeHtml(t.email)} · ${escapeHtml(t.phone || 'no phone')}</div>
+        <div style="margin-top:6px;"><span class="badge ${STAGE_COLORS[t.stage] || 'badge-amber'}"><span class="badge-dot"></span>${escapeHtml(STAGE_LABELS[t.stage] || t.stage)}</span></div>
+      </div>
+      <button onclick="closeTenantDetail()" style="background:none; border:none; font-size:22px; cursor:pointer; color:var(--text2);">×</button>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; padding:1rem; background:var(--bg); border-radius:var(--radius); border:1px solid var(--border); margin-bottom:1.25rem; font-size:13px;">
+      <div class="text-muted">Location:</div><div>${escapeHtml(t.location)}</div>
+      <div class="text-muted">Suite:</div><div class="mono">${escapeHtml(t.suite)}</div>
+      <div class="text-muted">Lease start:</div><div>${escapeHtml(t.leaseStartDate || '—')}</div>
+      <div class="text-muted">Weekly rent:</div><div>${escapeHtml(t.weeklyRent || '—')}</div>
+      <div class="text-muted">Created:</div><div>${formatRelative(t.createdAt)} by ${escapeHtml(t.createdBy)}</div>
+    </div>
+    ${actionsHtml}
+    <div id="td-action-error" class="alert alert-error" style="display:none; margin-top:1rem;"></div>
+  `;
+}
+
+function setActionError(msg) {
+  const e = document.getElementById('td-action-error');
+  e.textContent = msg; e.style.display = '';
+}
+
+async function sendLease() {
+  const t = currentDetailTenant;
+  if (!confirm(`Send lease for signature to ${t.email}?\n\nThis will create a PandaDoc document and email it to them.`)) return;
+  const btn = document.getElementById('td-send-lease');
+  btn.disabled = true; btn.textContent = 'Sending (this can take 10-20s)...';
+  try {
+    const r = await fetch('/api/lease-send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId: t.id })
+    });
+    const data = await r.json();
+    if (!r.ok) { setActionError(data.error || 'Lease send failed.'); btn.disabled = false; btn.textContent = 'Send lease for signature'; return; }
+    await loadPipeline();
+    currentDetailTenant = pipelineCache.find(x => x.id === t.id);
+    renderTenantDetail();
+  } catch (e) {
+    setActionError('Network error: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Send lease for signature';
+  }
+}
+
+async function sendWelcome() {
+  const t = currentDetailTenant;
+  if (!confirm(`Send welcome email + intake form link to ${t.email}?`)) return;
+  try {
+    const r = await fetch('/api/welcome-send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenantId: t.id })
+    });
+    const data = await r.json();
+    if (!r.ok) { setActionError(data.error || 'Welcome send failed.'); return; }
+    await loadPipeline();
+    currentDetailTenant = pipelineCache.find(x => x.id === t.id);
+    renderTenantDetail();
+  } catch (e) {
+    setActionError('Network error: ' + e.message);
+  }
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
