@@ -1,6 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/", "destination": "/vara-ops-hub.html" },
-    { "source": "/intake/:token", "destination": "/intake.html" }
-  ]
-}
