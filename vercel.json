@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/vara-ops-hub.html" }
+  ]
+}
